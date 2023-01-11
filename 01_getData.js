@@ -20,3 +20,7 @@ i = i.reduce(ee.Reducer.sum())
 print(i, 'image 2')
 
 Map.addLayer(i.randomVisualizer())
+
+var j = ee.FeatureCollection('users/joaovsiqueira1/brazil-biomes-trajectorties-3a') 
+        .filterMetadata('name_pt_br','equals', 'CERRADO')
+print(j)
