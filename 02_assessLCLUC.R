@@ -1,0 +1,259 @@
+## assess cerrado wetlands
+## dhemerson.costa@ipam.org.br
+
+## read libraries
+library(sf)
+library(ggplot2)
+library(reshape2)
+library(ggpmisc)
+library(tidyverse)
+library(ggpubr)
+library(tibble)
+library(dplyr)
+library(quantreg)
+library(ggsflabel)
+library(ggrepel)
+
+## set options
+options(scipen= 999)
+
+## read ecoregion shapefile
+vec <- read_sf('./vector/ecoregions.shp')
+
+## read LCLUC data
+lcluc <- read.csv('./table/mapbiomas_collection70_integration_v2_ecoregion.csv')
+lcluc <- lcluc[, !names(lcluc) %in% c('system.index', '.geo')]    ## drop undesired columns from LCLUC
+
+## read LCLUC dicitonary
+dict <- read.csv('./dict/mapbiomas-dict-en2.csv', sep= ';')
+
+## translate LCLUC classes
+data <- as.data.frame(NULL)
+## for each class id
+for (i in 1:length(unique(lcluc$class_id))) {
+  ## for each unique value
+  y <- subset(dict, id == unique(lcluc$class_id)[i])
+  ## select matched class
+  z <- subset(lcluc, class_id == unique(lcluc$class_id)[i])
+  ## apply LCLUC translation
+  z$level_1 <- gsub(paste0('^',y$id,'$'), y$level_1, z$class_id)
+  z$level_1.2 <- gsub(paste0('^',y$id,'$'), y$level_1.2, z$class_id)
+  z$level_2 <- gsub(paste0('^',y$id,'$'), y$level_2, z$class_id)
+  z$level_3 <- gsub(paste0('^',y$id,'$'), y$level_3, z$class_id)
+  z$level_4 <- gsub(paste0('^',y$id,'$'), y$level_4, z$class_id)
+  z$level_wet <- gsub(paste0('^',y$id,'$'), y$level_wet, z$class_id)
+  
+  ## bind into recipe
+  data <- rbind(data, z)
+  rm(y, z)
+}
+rm(lcluc, dict, i)
+
+## build territory dict
+dict <- as.data.frame(cbind(
+  id= vec$ID,
+  ecoregion= vec$NAME)
+  )
+
+## translate 
+data2 <- as.data.frame(NULL)
+## for each ecoregion id
+for (i in 1:length(unique(data$territory))) {
+  ## for each unique value
+  y <- subset(dict, id == unique(data$territory)[i])
+  ## select matched class
+  z <- subset(data, territory == unique(data$territory)[i])
+  ## apply tenure translation for each level
+  z$ecoregion <- gsub(paste0('^',y$id,'$'), paste0(y$id, '. ', y$ecoregion), z$territory)
+  ## bind into recipe
+  data2 <- rbind(data2, z)
+  rm(y, z)
+}
+
+data <- data2
+rm(data2, dict, i)
+
+## get only 2021 year
+cy <- subset(data, year == 2021)
+## aggregate data
+cy <- aggregate(x=list(area= cy$area), by=list(class= cy$level_2), FUN= 'sum')
+## quanto de área úmida resta no cerrado?
+subset(cy, class== 'Wetland')
+## isso representa quanto de todo o território?
+subset(cy, class== 'Wetland')$area / sum(cy$area) * 100
+rm(cy)
+
+## get lcluc by ecoregion
+cy <- subset(aggregate(x=list(area= data$area), by=list(class= data$level_2, year= data$year, region= data$ecoregion), FUN= 'sum'),
+             year == 2021)
+
+## compute the wetland relative area ofr each ecoregion
+data2 <- as.data.frame(NULL)
+for (i in 1:length(unique(cy$region))) {
+  ## get region 
+  x <- subset(cy, region== unique(cy$region)[i])
+  ## insert relative wetland
+  x$rel_wet <- subset(x, class == 'Wetland')$area / sum(x$area) * 100
+  ## bind
+  data2 <- rbind(data2, subset(x, class== 'Wetland'))
+  rm(x)
+}
+rm(cy)
+
+## cast metrics (columns) as lines
+data3 <- as.data.frame(rbind(cbind(region= data2$region, value= data2$area/1e3, metric= 'Area (Mha)'), 
+                             cbind(region= data2$region, value= data2$rel_wet, metric= 'Relative Area (%)')))
+
+## get only aboslute area
+z <- subset(data3, metric == 'Area (Mha)')
+
+## compute percnt i relation the total
+z$perc <- round(as.numeric(z$value) / sum(as.numeric(z$value)) * 100, digits=1)
+
+## plot "onde estao as wetlands do cerrado?" - grafico 
+ggplot(z, mapping=aes(x= reorder(region, as.numeric(value)), y= as.numeric(value), fill= as.numeric(value))) +
+  geom_bar(stat= 'identity', col= 'black') +
+  scale_fill_fermenter('Area (Kha)', breaks=c(0, 20, 50, 200, 500, 1000, 3000), palette = 'BrBG', direction= 1) +
+  geom_text(mapping=aes(label= paste0(round(as.numeric(value), digits=0),' Kha - ', perc, '%')),
+            hjust=-0.1, size=4) +
+  coord_flip(clip= 'off', ylim=c(0, 4000)) + 
+  theme_classic() +
+  theme(text = element_text(size = 14)) +
+  xlab(NULL) +
+  ylab('Área (Kha)')
+
+## join data with shapefile
+z$ID <- as.numeric(sapply(strsplit(z$region, split='.', fixed=TRUE), function(x) (x[1]))) ## parse ID from region names
+vec <- left_join(vec, z, by= 'ID')
+
+## get ID labels to plot on the map
+points <- as.data.frame(st_coordinates(st_centroid(vec)))
+points$ID <- vec$ID
+
+## plot maps
+ggplot() +
+  geom_sf(data= vec, mapping= aes(fill= as.numeric(value)), col= 'gray50') +
+  geom_text_repel(data = points, aes(X, Y, label = ID), size = 6, col='black') +
+  scale_fill_fermenter('Area (Kha)', breaks=c(0, 20, 50, 200, 500, 1000, 3000), palette = 'BrBG', direction= 1) +
+  theme_void() +
+  xlab(NULL) +
+  ylab(NULL)
+
+## get land tenure
+tenure <- read.csv('./table/fundiario_wet_ecoregion.csv')
+tenure <- tenure[, !names(tenure) %in% c('system.index', '.geo')]    ## drop undesired columns from LCLUC
+
+## build territory dict
+dict <- as.data.frame(cbind(
+  id= vec$ID,
+  ecoregion= vec$NAME)
+)
+
+## translate ecoregion
+data2 <- as.data.frame(NULL)
+## for each ecoregion id
+for (i in 1:length(unique(tenure$territory))) {
+  ## for each unique value
+  y <- subset(dict, id == unique(tenure$territory)[i])
+  ## select matched class
+  z <- subset(tenure, territory == unique(tenure$territory)[i])
+  ## apply tenure translation for each level
+  z$ecoregion <- gsub(paste0('^',y$id,'$'), paste0(y$id, '. ', y$ecoregion), z$territory)
+  ## bind into recipe
+  data2 <- rbind(data2, z)
+  rm(y, z)
+}
+
+tenure <- data2
+rm(data2, dict, i)
+
+## translate land tenure
+dict <- read.csv('./dict/tenure-dict-en.csv', sep=';')
+
+## create recipe to translate each land tenure
+recipe <- as.data.frame(NULL)
+## for each tenure id
+for (j in 1:length(unique(tenure$class_id))) {
+  ## for each unique value, get mean in n levels
+  y <- subset(dict, Value == unique(tenure$class_id)[j])
+  ## select matched land tenure 
+  z <- subset(tenure, class_id == unique(tenure$class_id)[j])
+  ## apply tenure translation for each level
+  z$tenure <- gsub(paste0('^',y$Value,'$'), y$tenure.l1, z$class_id)
+  ## bind into recipe
+  recipe <- rbind(recipe, z)
+}
+rm(y,z,j)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## cast table into columns
+data_cast <- dcast(data, year + ecoregion ~ level_wet, value.var='area', sum)
+
+## plot analysis
+ggplot(data= data_cast, mapping=aes(x= Water/1e3 , y= Wetland/1e3)) +
+  geom_point(alpha=0.5) +
+  stat_correlation(method= 'spearman', col= 'blue', size= 5) + 
+  facet_wrap(~ecoregion, scales= 'free') + 
+  theme_bw() +
+  xlab('Water (Kha)') + ylab ('Wetland (Kha)')
+
+## compute spearmans correlation per ecoregion
+for (i in 1:length(unique(data_cast$ecoregion))) {
+  ## subset ecoregion
+  x <- subset(data_cast, ecoregion == unique(data_cast$ecoregion)[i])
+  ## compute correlation
+  as.data.frame(cbind(ecoregion= unique(data_cast$ecoregion)[i], 
+                      cor= cor(x= x$Water, y= x$Wetland, method= 'spearman')))
+  
+}
+
+
+
+
+
+
+
+
+## get only 2021 data
+#last <- subset(data, year== 2021)
+
+## subset (get only water and wetlands)
+#data2 <- subset(data, level_wet!= 'Others')
+#ggplot(data= data2, mapping= aes(x= year, y=area/1e6, col= level_wet)) +
+#  stat_summary(geom='line', fun= 'sum', size= 1.5) +
+#  scale_colour_manual('Class', values=c('#0000ff', '#45c2a5')) + 
+#  facet_wrap(~ecoregion, scales= 'free_y') +
+#  theme_bw() +
+#  xlab('Year') + ylab('Area (Mha)')
+
+#ggplot() +
+#  geom_sf(data= vec, fill= 'white', col= 'black') 
