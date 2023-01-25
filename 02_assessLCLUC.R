@@ -13,6 +13,8 @@ library(dplyr)
 library(quantreg)
 library(ggsflabel)
 library(ggrepel)
+library(treemapify)
+library(cartogram)
 
 ## set options
 options(scipen= 999)
@@ -139,6 +141,20 @@ ggplot() +
   xlab(NULL) +
   ylab(NULL)
 
+## build cartogram
+vec$value <- as.numeric(vec$value)
+# construct a cartogram 
+wet_cart <- cartogram(st_transform(vec, 3857), "value", itermax=30)
+
+# plot cartogram
+ggplot() +
+  geom_sf(data= wet_cart, mapping= aes(fill= as.numeric(value)), col= 'gray50') +
+  #geom_text_repel(data = points, aes(X, Y, label = ID), size = 6, col='black') +
+  scale_fill_fermenter('Area (Kha)', breaks=c(0, 20, 50, 200, 500, 1000, 3000), palette = 'BrBG', direction= 1) +
+  theme_void() +
+  xlab(NULL) +
+  ylab(NULL)
+
 ## get land tenure
 tenure <- read.csv('./table/fundiario_wet_ecoregion.csv')
 tenure <- tenure[, !names(tenure) %in% c('system.index', '.geo')]    ## drop undesired columns from LCLUC
@@ -184,31 +200,151 @@ for (j in 1:length(unique(tenure$class_id))) {
   recipe <- rbind(recipe, z)
 }
 rm(y,z,j)
+tenure <- recipe; rm(recipe)
+
+## get only 2021 tenure data
+tenureY <- subset(tenure, year == 2021)
+
+## aggregate
+tenureYY <- aggregate(x=list(area= tenureY$area), by= list(tenure= tenureY$tenure), FUN= 'sum')
+## compute proportions
+tenureYY$perc <- round(tenureYY$area / sum(tenureYY$area) * 100, digits=1)
+
+## build label
+tenureYY$lab <- paste0(tenureYY$tenure,'\n', round(tenureYY$area/1e6, digits=1),' Mha - ', tenureYY$perc,'%')
+
+## plot
+ggplot(tenureYY, aes(area = area, fill = tenure, label = lab)) +
+  geom_treemap(alpha=0.5, col='black') +
+  geom_treemap_text(size=15, grow= FALSE, place= 'center') 
+
+## get relative area per tenure
+recipe <- as.data.frame(NULL)
+for (i in 1:length(unique(tenureY$tenure))) {
+  ## get tenure x
+  x <- subset(tenureY, tenure== unique(tenureY$tenure)[i])
+  ## aggregate
+  x <- aggregate(x=list(area= x$area), by=list(ecoregion= x$ecoregion, tenure= x$tenure), FUN= 'sum')
+  ## compute percents
+  x$perc <- round(x$area / sum(x$area) * 100, digits=1)
+  ## insert zeros (regions without this tenure)
+  ## pegar etiquetas onde o fundiario nao ocorre
+  a  <- unique(tenureY$ecoregion) [- which(unique(tenureY$ecoregion) %in% unique(x$ecoregion)) ]
+  ## organizar dataframe
+  b  <- rep(unique(x$tenure), length(a))
+  c <- rep(0, length(a))
+  d <- rep(0, length(a))
+  ## merge
+  f <- as.data.frame(cbind(
+    ecoregion= a,
+    tenure= b,
+    area= c,
+    perc= d
+  ))
+  ## bind
+  x <- rbind(x, f)
+  ## bind
+  recipe <- rbind(recipe, x)
+  rm(x, a, b, c, d, f)
+  }
+
+## read ecoregion shapefile
+vec <- read_sf('./vector/ecoregions.shp')
+
+## parse ID 
+recipe$ID <- as.numeric(sapply(strsplit(recipe$ecoregion, split='.', fixed=TRUE), function(x) (x[1]))) ## parse ID from region names
+vec <- left_join(vec, recipe, by= 'ID')
+
+## plot
+x11()
+ggplot(data= vec) +
+  geom_sf(data= vec, mapping= aes(fill= as.numeric(perc)), col= 'gray70', size=0.5) +
+  geom_text_repel(data = points, aes(X, Y, label = ID), size = 3, col='black') +
+  scale_fill_fermenter('Relative Area (%)', breaks=c(0, 5, 10, 20, 40, 80), palette = 'YlOrRd', direction= 1) +
+  facet_wrap(~tenure) + 
+  theme_void() +
+  theme(text = element_text(size = 14)) +
+  xlab(NULL) +
+  ylab(NULL)
+
+
+####################
+## stability analysis
+## read trajectories
+traj <- read.csv('./table/col7_trajectories_wetland_cerrado.csv')
+traj <- traj[, !names(traj) %in% c('system.index', '.geo')]    ## drop undesired columns from LCLUC
+
+## translate trajectory
+traj$class_id <- gsub('^1$', 'Pr-Ab Ch=1',
+                      gsub('^2$', 'Ab-Pr Ch=1',
+                           gsub('^3$', 'Pr-Ab Ch>2',
+                                gsub('^4$', 'Ab-Pr Ch>2',
+                                     gsub('^5$', 'Ab-Ab or Pr-Pr Ch>1',
+                                          gsub('^6$', 'Pr-Pr Ch=0',
+                                               gsub('^7$', 'Ab-Ab Ch=0',
+                                                    traj$class_id)))))))
+
+## read ecoregion shapefile
+vec <- read_sf('./vector/ecoregions.shp')
+
+## build territory dict
+dict <- as.data.frame(cbind(
+  id= vec$ID,
+  ecoregion= vec$NAME)
+)
+
+## translate 
+data2 <- as.data.frame(NULL)
+## for each ecoregion id
+for (i in 1:length(unique(traj$territory))) {
+  ## for each unique value
+  y <- subset(dict, id == unique(traj$territory)[i])
+  ## select matched class
+  z <- subset(traj, territory == unique(traj$territory)[i])
+  ## apply tenure translation for each level
+  z$ecoregion <- gsub(paste0('^',y$id,'$'), paste0(y$id, '. ', y$ecoregion), z$territory)
+  ## bind into recipe
+  data2 <- rbind(data2, z)
+  rm(y, z)
+}
+
+## aggregate
+x <- aggregate(x=list(area= traj$area), by=list(traj= traj$class_id), FUN= 'sum')
+#3 remove Ab-Ab traj
+x <- subset(x, traj != 'Ab-Ab Ch=0')
+
+## compute percents
+x$perc <- round(x$area/sum(x$area)*100, digits=1)
+
+## plot trajectories
+ggplot(data= x, mapping= aes(area= area, fill= traj)) +
+  geom_treemap() +
+  geom_treemap_text(mapping= aes(label= paste0(traj, '\n', 
+                                               round(area/1e6, digits=2), ' Mha - ', perc, '%'))) +
+  scale_fill_manual(values=c("#ffff00", "#020e7a", "#14a5e3", "#941004", "#f5261b", "#666666")) +
+  theme(legend.position="none") +
+  xlab('Trajectories (1985 - 2021)')
 
 
 
 
 
+## get nPresence
+np <- read.csv('./table/col7_nYearPresence_wetland_cerrado.csv')
+np <- np[, !names(np) %in% c('system.index', '.geo')]    ## drop undesired columns from LCLUC
+## aggregate
+np <- aggregate(x=list(area=np$area), by=list(freq=np$class_id), FUN='sum')
 
+## plot freq
+ggplot(data= subset(np, freq != 37), mapping=aes(x=freq, y= area/1000)) +
+  geom_line(stat= 'identity', size=1, col= 'red', alpha=0.6) +
+  geom_point(alpha=0.7, pch=7, size=2) +
+  theme_classic() +
+  xlab('n. years of presence') +
+  ylab('Area (Kha)')
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+##  calc perc
+np$perc <- np$area/sum(np$area)*100
 
 
 
@@ -235,11 +371,6 @@ for (i in 1:length(unique(data_cast$ecoregion))) {
                       cor= cor(x= x$Water, y= x$Wetland, method= 'spearman')))
   
 }
-
-
-
-
-
 
 
 
