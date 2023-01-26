@@ -326,9 +326,6 @@ ggplot(data= x, mapping= aes(area= area, fill= traj)) +
   xlab('Trajectories (1985 - 2021)')
 
 
-
-
-
 ## get nPresence
 np <- read.csv('./table/col7_nYearPresence_wetland_cerrado.csv')
 np <- np[, !names(np) %in% c('system.index', '.geo')]    ## drop undesired columns from LCLUC
@@ -346,8 +343,85 @@ ggplot(data= subset(np, freq != 37), mapping=aes(x=freq, y= area/1000)) +
 ##  calc perc
 np$perc <- np$area/sum(np$area)*100
 
+## insert labels
+data2$label <- 
+  gsub('Pr-Pr Ch=0', 'Stable',
+     gsub('Pr-Ab Ch=1', 'Loss',
+          gsub('Pr-Ab Ch>2', 'Loss',
+               gsub('Ab-Pr Ch=1', 'Gain',
+                    gsub('Ab-Pr Ch>2', 'Gain',
+                         gsub('Ab-Ab or Pr-Pr Ch>1', 'All Alternation',
+                              data2$class_id))))))
+
+## remove absence
+net <- subset(data2, label != 'Ab-Ab Ch=0')
+
+## aggregate
+net_ag <- aggregate(x=list(area= net$area), by=list(ecoregion= net$ecoregion, label=net$label), FUN= 'sum')
+
+## compute net (gain - loss)
+recipe <- as.data.frame(NULL)
+for (i in 1:length(unique(net_ag$ecoregion))) {
+  x <- subset(net_ag, ecoregion == unique(net_ag$ecoregion)[i])
+  ## compute percents
+  x$perc <-round(x$area/sum(x$area)*100, digits=1)
+  
+  ## compute net balance
+  y <- as.data.frame(
+          cbind(
+            ecoregion= unique(x$ecoregion),
+            label= 'Net Balance',
+            area= subset(x, label == 'Gain')$area - subset(x, label == 'Loss')$area
+          )
+  )
+  
+  ## compute perc of net balance
+  y$perc <- round(as.numeric(y$area)/sum(x$area) * 100, digits=1)
+  
+  ## bind
+  x <- rbind(x, y)
+  recipe <- rbind(recipe, x)
+  rm(x, y)
+}
+
+## read ecoregion shapefile
+vec <- read_sf('./vector/ecoregions.shp')
+
+## parse ID 
+recipe$ID <- as.numeric(sapply(strsplit(recipe$ecoregion, split='.', fixed=TRUE), function(x) (x[1]))) ## parse ID from region names
+vec <- left_join(vec, recipe, by= 'ID')
 
 
+#re-order factor levels for trajectories
+vec$label <- factor(vec$label, levels=c('Net Balance', 'Gain', 'Loss', 'All Alternation', 'Stable'))
+
+## Plot Maps
+x11()
+ggplot() +
+  geom_sf(data= vec, mapping= aes(fill= as.numeric(perc)), col= 'gray70', size=0.5) +
+  geom_text_repel(data = points, aes(X, Y, label = ID), size = 3, col='black') +
+  scale_fill_fermenter('Relative Area (%)', breaks=c(-10, 0, 5, 10, 20, 40, 80), palette = 'Spectral', direction= 1) +
+  facet_wrap(~label, nrow=1) + 
+  theme_void() +
+  theme(text = element_text(size = 14)) +
+  xlab(NULL) +
+  ylab(NULL)
+
+## plot graphs
+ggplot(data= vec, mapping= aes(x= reorder(ecoregion, -perc), y= perc, fill= perc)) +
+  geom_bar(stat='identity', col='black') +
+  scale_fill_fermenter('Relative Area (%)', breaks=c(-10, 0, 5, 10, 20, 40, 80), palette = 'Spectral', direction= 1) +
+  geom_text(mapping=aes(label= paste0(perc, '%', ' | ', round(as.numeric(area)/1000), ' Kha')), hjust="inward") +
+  facet_wrap(~label, nrow=1) +
+  coord_flip() +
+  theme_minimal() +
+  theme(text = element_text(size = 14),
+        legend.position = "none") +
+  xlab(NULL) +
+  ylab('Relative Area (%)')
+
+
+names(vec)
 
 
 
