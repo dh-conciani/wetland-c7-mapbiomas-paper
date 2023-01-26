@@ -83,7 +83,7 @@ asset.map(function(file) {
   // perform per year 
   var areas = years.map(
       function (year) {
-          var image = asset_i.select('classification_' + year);
+          var image = asset_i.select('transitions_' + year);
           var areas = calculateArea(image, territory, geometry);
           // set additional properties
           areas = areas.map(
